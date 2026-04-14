@@ -1,0 +1,131 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: monitoring
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitoring"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  monitoring-backend:
+    build: ./monitoring-backend
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    environment:
+      DATABASE_URL: postgresql+asyncpg://monitor:monitor@postgres:5432/monitoring
+      DATABASE_URL_SYNC: postgresql+psycopg2://monitor:monitor@postgres:5432/monitoring
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-prod}
+      METRICS_INGEST_TOKEN: ${METRICS_INGEST_TOKEN:-dev-internal-metrics-token}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin-change-me}
+      DEFAULT_VIEWER_PASSWORD: ${DEFAULT_VIEWER_PASSWORD:-viewer-change-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    expose:
+      - "8000"
+
+  celery-worker:
+    build: ./monitoring-backend
+    command: ["celery", "-A", "app.celery_app", "worker", "--loglevel=INFO"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://monitor:monitor@postgres:5432/monitoring
+      DATABASE_URL_SYNC: postgresql+psycopg2://monitor:monitor@postgres:5432/monitoring
+      REDIS_URL: redis://redis:6379/0
+      METRICS_INGEST_TOKEN: ${METRICS_INGEST_TOKEN:-dev-internal-metrics-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      monitoring-backend:
+        condition: service_healthy
+
+  celery-beat:
+    build: ./monitoring-backend
+    command: ["celery", "-A", "app.celery_app", "beat", "--loglevel=INFO"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://monitor:monitor@postgres:5432/monitoring
+      DATABASE_URL_SYNC: postgresql+psycopg2://monitor:monitor@postgres:5432/monitoring
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_started
+      monitoring-backend:
+        condition: service_healthy
+
+  monitored-service-1:
+    build: ./monitored-services
+    environment:
+      SERVICE_NAME: monitored-service-1
+      MONITORING_URL: http://monitoring-backend:8000
+      METRICS_INGEST_TOKEN: ${METRICS_INGEST_TOKEN:-dev-internal-metrics-token}
+      CHAOS_MODE: "false"
+    depends_on:
+      monitoring-backend:
+        condition: service_healthy
+    expose:
+      - "9000"
+
+  monitored-service-2:
+    build: ./monitored-services
+    environment:
+      SERVICE_NAME: monitored-service-2
+      MONITORING_URL: http://monitoring-backend:8000
+      METRICS_INGEST_TOKEN: ${METRICS_INGEST_TOKEN:-dev-internal-metrics-token}
+      CHAOS_MODE: "true"
+    depends_on:
+      monitoring-backend:
+        condition: service_healthy
+    expose:
+      - "9000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: /api
+    expose:
+      - "80"
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      monitoring-backend:
+        condition: service_healthy
+      monitored-service-1:
+        condition: service_started
+      monitored-service-2:
+        condition: service_started
+      frontend:
+        condition: service_started
+
+volumes:
+  pgdata:
