@@ -25,27 +25,35 @@ def _session() -> Session:
 
 
 def _recent_open_alert(
-    session: Session, service_name: str, alert_type: str, within_seconds: int
+    session: Session, service_name: str, alert_type: str, within_seconds: int | None
 ) -> bool:
-    since = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
-    q = (
-        select(Alert.id)
-        .where(
-            and_(
-                Alert.service_name == service_name,
-                Alert.alert_type == alert_type,
-                Alert.resolved.is_(False),
-                Alert.created_at >= since,
-            )
-        )
-        .limit(1)
-    )
+    """
+    Returns True if there is already an open (unresolved) alert matching service+type.
+
+    For most alert types we dedupe within a short window to avoid spamming identical rows.
+    For service_down we dedupe for as long as the incident remains open.
+    """
+    conds = [
+        Alert.service_name == service_name,
+        Alert.alert_type == alert_type,
+        Alert.resolved.is_(False),
+    ]
+    if within_seconds is not None:
+        since = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
+        conds.append(Alert.created_at >= since)
+
+    q = select(Alert.id).where(and_(*conds)).limit(1)
     return session.execute(q).scalar_one_or_none() is not None
 
 
 def _insert_alert(session: Session, service_name: str, alert_type: str, message: str) -> None:
-    if _recent_open_alert(session, service_name, alert_type, within_seconds=300):
-        return
+    # service_down should not create a new open row every minute while still unresolved
+    if alert_type == "service_down":
+        if _recent_open_alert(session, service_name, alert_type, within_seconds=None):
+            return
+    else:
+        if _recent_open_alert(session, service_name, alert_type, within_seconds=300):
+            return
     session.add(
         Alert(
             service_name=service_name,
