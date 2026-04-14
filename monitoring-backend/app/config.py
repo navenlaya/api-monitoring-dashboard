@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
 
     metrics_ingest_token: str = "dev-internal-metrics-token"
+    demo_traffic_token: str = "dev-demo-traffic-token-change-me"
 
     # Alert thresholds (Celery tasks use these)
     alert_error_rate_percent: float = 15.0

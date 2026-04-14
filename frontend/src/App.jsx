@@ -10,6 +10,7 @@ import {
 } from "recharts";
 
 const apiBase = import.meta.env.VITE_API_BASE ?? "/api";
+const demoToken = import.meta.env.VITE_DEMO_TRAFFIC_TOKEN ?? "";
 
 function authHeader() {
   const t = localStorage.getItem("token");
@@ -128,7 +129,11 @@ export default function App() {
     try {
       const r = await fetch(`${apiBase}/demo/traffic/start`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeader() },
+        headers: {
+          "Content-Type": "application/json",
+          ...(demoToken ? { "X-Demo-Token": demoToken } : {}),
+          ...authHeader(),
+        },
         body: JSON.stringify({ seconds: 45, rps: 8, chaos_bias: 0.65 }),
       });
       if (!r.ok) {
@@ -225,7 +230,7 @@ export default function App() {
             <button className="primary" onClick={refresh}>
               Refresh
             </button>
-            {isAdmin ? (
+            {isAdmin || demoToken ? (
               <button onClick={startDemoTraffic}>Start 45s demo traffic</button>
             ) : null}
           </div>

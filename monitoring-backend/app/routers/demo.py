@@ -2,11 +2,12 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import require_admin
+from app.api.deps import get_current_user_optional
 from app.celery_app import celery_app
+from app.config import get_settings
 from app.models import User
 from app.services.redis_cache import get_redis
 
@@ -32,7 +33,7 @@ class DemoTrafficResponse(BaseModel):
     chaos_bias: float
 
 
-async def _rate_limit_or_429(user: User) -> None:
+async def _rate_limit_or_429(identity: str) -> None:
     """
     Prevent spam. Limits per-user and globally using Redis counters.
     Also enforces a single active traffic job at a time (simple lock).
@@ -48,8 +49,8 @@ async def _rate_limit_or_429(user: User) -> None:
             detail="Demo traffic already running. Try again shortly.",
         )
 
-    # Per-user: max 2 starts / 5 minutes
-    user_key = f"demo:traffic:user:{user.username}"
+    # Per-identity: max 2 starts / 5 minutes (admin user or demo token identity)
+    user_key = f"demo:traffic:user:{identity}"
     user_count = await r.incr(user_key)
     if user_count == 1:
         await r.expire(user_key, 300)
@@ -76,9 +77,20 @@ async def _rate_limit_or_429(user: User) -> None:
 @router.post("/traffic/start", response_model=DemoTrafficResponse)
 async def start_demo_traffic(
     body: DemoTrafficRequest,
-    user: Annotated[User, Depends(require_admin)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
+    x_demo_token: Annotated[str | None, Header(alias="X-Demo-Token")] = None,
 ):
-    await _rate_limit_or_429(user)
+    settings = get_settings()
+    is_admin = user is not None and user.role == "admin"
+    demo_ok = x_demo_token is not None and x_demo_token == settings.demo_traffic_token
+    if not is_admin and not demo_ok:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role or valid X-Demo-Token required",
+        )
+
+    identity = user.username if is_admin else "public-demo"
+    await _rate_limit_or_429(identity)
 
     job_id = str(uuid.uuid4())
     try:
@@ -88,7 +100,7 @@ async def start_demo_traffic(
         )
         logger.info(
             "demo traffic started by %s job_id=%s seconds=%s rps=%s chaos_bias=%s",
-            user.username,
+            identity,
             job_id,
             body.seconds,
             body.rps,

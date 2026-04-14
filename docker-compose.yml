@@ -38,6 +38,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-prod}
       METRICS_INGEST_TOKEN: ${METRICS_INGEST_TOKEN:-dev-internal-metrics-token}
+      DEMO_TRAFFIC_TOKEN: ${DEMO_TRAFFIC_TOKEN:-dev-demo-traffic-token-change-me}
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin-change-me}
       DEFAULT_VIEWER_PASSWORD: ${DEFAULT_VIEWER_PASSWORD:-viewer-change-me}
     depends_on:
@@ -108,13 +109,14 @@ services:
       context: ./frontend
       args:
         VITE_API_BASE: /api
+        VITE_DEMO_TRAFFIC_TOKEN: ${DEMO_TRAFFIC_TOKEN:-}
     expose:
       - "80"
 
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "8080:8080"
+      - "80:8080"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
